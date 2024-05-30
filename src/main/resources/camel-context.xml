@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:camel="http://camel.apache.org/schema/spring"
+       xmlns:util="http://www.springframework.org/schema/util"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+							http://www.springframework.org/schema/beans/spring-beans-4.2.xsd
+							http://camel.apache.org/schema/spring
+							http://camel.apache.org/schema/spring/camel-spring.xsd
+							http://www.springframework.org/schema/util
+							http://www.springframework.org/schema/util/spring-util-4.2.xsd">
+
+    <bean id="sslStart" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.configurer.StartSSLContext" />
+    <bean id="rtdRequestProcessor" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.processor.RTDRequestProcessor" />
+    <bean id="mailFileProcessor" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.processor.MailFileProcessor"/>
+
+    <bean id="dataSource" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.configurer.DataSource" destroy-method="close">
+        <property name="driverClassName" value="org.postgresql.Driver" />
+    </bean>
+
+    <bean id="espToRtdmRedeliveryPolicyConfig" class="org.apache.camel.processor.RedeliveryPolicy">
+        <property name="maximumRedeliveries" value="3"/>
+        <property name="redeliveryDelay" value="1000"/>
+    </bean>
+
+    <bean id="defaultShutdownStrategy" class="org.apache.camel.impl.DefaultShutdownStrategy">
+        <property name="timeout" value="10"/>
+        <property name="shutdownNowOnTimeout" value="true"/>
+        <property name="suppressLoggingOnTimeout" value="true"/>
+    </bean>
+
+    <camelContext id="DurmientesEspToRtdmContext" xmlns="http://camel.apache.org/schema/spring" streamCache="false">
+        <properties>
+            <property key="CamelCachedOutputStreamThreshold" value="1048576"/>
+            <property key="CamelCachedOutputStreamBufferSize" value="131072"/>
+        </properties>
+
+        <threadPoolProfile poolSize="2048" maxPoolSize="2048" maxQueueSize="10240"  id="test01" />
+        <onException redeliveryPolicyRef="espToRtdmRedeliveryPolicyConfig">
+            <exception>com.davivienda.fabricainteracciones.rtdm.durmientes.app.exception.SendEventToRTDMException</exception>
+            <exception>org.apache.camel.http.common.HttpOperationFailedException</exception>
+            <handled>
+                <constant>true</constant>
+            </handled>
+
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.CamelExceptionCaught.toString} contains 'HttpOperationFailedException'</simple>
+                    <log message="${exchangeProperty.CamelExceptionCaught} | ${exchangeProperty.CamelExceptionCaught.responseBody}" loggingLevel="ERROR" />
+                </when>
+                <otherwise>
+                    <log message="Error en: ${exchange.getUnitOfWork().getRouteContext().getRoute().getId()} |
+        					${exchangeProperty.CamelExceptionCaught.getMessage()}" loggingLevel="ERROR"/>
+                </otherwise>
+            </choice>
+        </onException>
+
+        <route id="ROUTE_GET_ACF_FROM_ESP">
+            <from uri="esp://{{esp.server.host}}:{{esp.server.port}}?project={{esp.node.project}}&amp;contquery={{esp.node.contquery}}&amp;window={{esp.node.window_acf}}"/>
+            <log message="Exitosa: ${body}"/>
+            <to uri="kafka:{{kafka.esp.topic.acf}}?brokers={{kafka.esp.host}}:{{kafka.esp.port}}&amp;groupId={{kafka.esp.group}}&amp;autoOffsetReset=earliest"/>
+        </route>
+
+        <route id="ROUTE_GET_CAIDA_FROM_ESP">
+            <from uri="esp://{{esp.server.host}}:{{esp.server.port}}?project={{esp.node.project}}&amp;contquery={{esp.node.contquery}}&amp;window={{esp.node.window_caida}}"/>
+            <log message="Caída: ${body}"/>
+            <to uri="kafka:{{kafka.esp.topic.caida}}?brokers={{kafka.esp.host}}:{{kafka.esp.port}}&amp;groupId={{kafka.esp.group}}&amp;autoOffsetReset=earliest"/>
+        </route>
+
+        <route id="ROUTE_SEQ_ACF_TO_RTD" streamCache="true">
+            <from uri="kafka:{{kafka.esp.topic.acf}}?brokers={{kafka.esp.host}}:{{kafka.esp.port}}&amp;groupId={{kafka.esp.group}}
+							&amp;autoOffsetReset=earliest
+							&amp;breakOnFirstError=true
+							&amp;brokers={{kafka.brokers}}
+							&amp;sessionTimeoutMs={{kafka.session.timeout}}
+							&amp;clientId={{kafka.clientId}}
+							&amp;reconnectBackoffMaxMs={{kafka.backoffms}}
+							&amp;consumerRequestTimeoutMs={{kafka.request.timeout}}
+							&amp;consumersCount={{kafka.consumers.count}}
+							&amp;heartbeatIntervalMs={{kafka.heartbeat.interval}}"/>
+            <wireTap uri="direct:serviceConsumer" executorServiceRef="test01"  />
+        </route>
+
+        <route id="ROUTE_CAIDA_TO_LOG">
+            <from uri="kafka:{{kafka.esp.topic.caida}}?brokers={{kafka.esp.host}}:{{kafka.esp.port}}&amp;groupId={{kafka.esp.group}}
+							&amp;autoOffsetReset=earliest
+							&amp;breakOnFirstError=true
+							&amp;brokers={{kafka.brokers}}
+							&amp;sessionTimeoutMs={{kafka.session.timeout}}
+							&amp;clientId={{kafka.clientId.caida}}
+							&amp;reconnectBackoffMaxMs={{kafka.backoffms}}
+							&amp;consumerRequestTimeoutMs={{kafka.request.timeout}}
+							&amp;consumersCount={{kafka.consumers.count}}
+							&amp;heartbeatIntervalMs={{kafka.heartbeat.interval}}"/>
+            <log message="Nodo Caída: ${body}"/>
+        </route>
+
+        <route id="ROUTE_INSERT_INTO_DATABASE">
+            <from uri="direct:insertIntoDatabase"/>
+            <doTry>
+                <to uri="sql:{{sql.insertOutputs}}"/>
+                <log message="Registro almacenado exitosamente ${body}" loggingLevel="INFO"/>
+                <doCatch>
+                    <exception>org.postgresql.util.PSQLException</exception>
+                    <exception>org.springframework.jdbc.CannotGetJdbcConnectionException</exception>
+                    <log message="${exchangeProperty.CamelExceptionCaught.getMessage()}" loggingLevel="ERROR"/>
+                </doCatch>
+            </doTry>
+        </route>
+
+        <route id="ROUTE_SERVICE_CONSUMER" streamCache="true">
+            <from uri="direct:serviceConsumer"/>
+            <process ref="rtdRequestProcessor"/>
+            <setHeader headerName="requestUri">
+                <simple>{{rtdm.server.host}}:{{rtdm.server.port}}{{rtdm.service.path.rtd.acf}}</simple>
+            </setHeader>
+            <log message="Inicio consumo Servicio: ${header.requestUri} | body: ${body}"/>
+            <setHeader headerName="Content-Type">
+                <constant>application/json</constant>
+            </setHeader>
+            <setHeader headerName="CamelHttpMethod">
+                <constant>POST</constant>
+            </setHeader>
+            <recipientList>
+                <simple>http4:${header.requestUri}?connectionsPerRoute=2048</simple>
+            </recipientList>
+            <log message="Finaliza Consumo Servicio: ${header.requestUri} | responseCode: ${header.CamelHttpResponseCode} | responseBody: ${body}"/>
+            <setBody>
+                <simple>${exchangeProperty.EspResToDb}</simple>
+            </setBody>
+            <to uri="direct:insertIntoDatabase"/>
+        </route>
+
+        <route id="ROUTE_NOTIFY_ERROR">
+            <from uri="direct:notifyError"/>
+            <setHeader headerName="MailRecipient">
+                <simple>{{mail.recipient}}</simple>
+            </setHeader>
+            <setHeader headerName="MailSender">
+                <simple>{{mail.sender}}</simple>
+            </setHeader>
+            <process ref="mailFileProcessor"/>
+            <choice>
+                <when>
+                    <simple>${body} != null</simple>
+                    <setHeader headerName="MailFolder">
+                        <simple>MAIL_ERR_UPDATE_CONTACTS_${date:now:yyyyMMddHHmmssSSS}</simple>
+                    </setHeader>
+                    <to uri="file:{{mail.folder}}?fileName=/${header.MailFolder}/mail.params"/>
+                    <setBody>
+                        <simple>' '</simple>
+                    </setBody>
+                    <to uri="file:{{mail.folder}}?fileName=/${header.MailFolder}/recibido"/>
+                </when>
+            </choice>
+        </route>
+    </camelContext>
+</beans>
