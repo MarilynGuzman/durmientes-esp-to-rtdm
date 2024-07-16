@@ -44,10 +44,12 @@ public class RTDRequestProcessor implements Processor{
             // Creamos un array que contiene los nombres de las variables
             // que serán seleccionadas para armar el objeto JSON
             String[] varArray = new String[]{"tracking_esp", "tidnid","id_trx", "id_caso",
-                                              "numero_cuenta", "valor_trx","cl_digital", "cl_joven"};
-            String[] varArrayDB = new String[]{"tracking_esp", "tidnid", "id_trx", "id_caso",
-                                              "nro_cuenta", "cl_digital", "cl_joven", "valor_trx",
-                                              "fecha_transaccion", "hora_transaccion"};
+                                            "nro_cuenta", "valor_trx","cl_digital", "cl_joven",
+                                            "nro_tarjeta", "comercio1", "comercio2", "tipo_td"};
+            String[] varArrayDB = new String[]{"tracking_esp", "id_trx", "id_caso", "tidnid", "valor_trx",
+                                              "cl_digital", "cl_joven", "nro_cuenta",
+                                              "comercio1", "comercio2", "nro_tarjeta", "tipo_td",
+                                              "fecha_transaccion", "hora_transaccion", "fecha_creacion"};
             List<String> varList = Arrays.asList(varArray);
             List<String> varListDB = Arrays.asList(varArrayDB);
 
